@@ -94,8 +94,61 @@ spec:
         }
 
         // ── Lab 1: PR / Git Diff Review ──────────────────────────
-        //    Add a stage here that runs Bob in a "senior developer"
-        //    mode against the git diff. See labs/lab1/PR_REVIEW.md.
+        stage('PR Review') {
+            options {
+                timeout(time: 5, unit: 'MINUTES')
+            }
+            steps {
+                script {
+                    echo '════════════════════════════════════════════════════════'
+                    echo '  🤖 Bob PR Review Analysis'
+                    echo "  Started: ${new Date()}"
+                    echo '════════════════════════════════════════════════════════'
+
+                    catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                        // Configure git safe directory and compute diff
+                        sh '''
+                            git config --global --add safe.directory "$WORKSPACE"
+                            git diff origin/main...HEAD > git-diff.txt || : > git-diff.txt
+                        '''
+
+                        // Build prompt for Bob
+                        def prompt = """
+Read git-diff.txt and produce a senior developer PR overview.
+
+Focus on:
+- What changed (1-2 sentences per notable change)
+- Risk level (high/medium/low) for each change
+- Watch for: null-safety, concurrency, behavior changes, security surface, performance hot paths, missing tests
+
+Keep it brief - if nothing notable changed, say so in one sentence.
+"""
+
+                        // Run Bob analysis
+                        def analysis = askBob(prompt, 'pipeline-git-diff-overview')
+
+                        // Display in console
+                        echo ''
+                        echo analysis
+                        echo ''
+
+                        // Save for archiving
+                        writeFile file: 'bob-pr-review.md', text: analysis
+                    }
+
+                    echo "  Completed: ${new Date()}"
+                    echo "  Full report: bob-pr-review.md (archived)"
+                    echo '════════════════════════════════════════════════════════'
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'bob-pr-review.md',
+                                   allowEmptyArchive: true,
+                                   fingerprint: true
+                }
+            }
+        }
 
         // ── Lab 2: Unit Testing ──────────────────────────────────
         //    Add a mvn test stage + Bob test-failure analysis.
@@ -119,22 +172,24 @@ spec:
         }
     }
 }
-// ?? Helper: ask Bob, optionally with a specific custom mode ???????????????????
+// ── Helper: ask Bob, optionally with a specific custom mode ──────────────────
 // Writes the prompt to a tempfile in the shared workspace and runs `bob` in
 // the bob container.
 // Returns the analysis as a string. Using a tempfile (instead of inlining the
 // prompt on the command line) avoids shell-escaping issues when the prompt
-// contains quotes, backticks, or newlines ? common with diffs.
+// contains quotes, backticks, or newlines — common with diffs.
 def askBob(String prompt, String mode = null) {
- container('bob') {
- def promptFile = ".bob-prompt-${System.currentTimeMillis()}.txt"
- writeFile file: promptFile, text: prompt
- def modeFlag = mode ? "--mode ${mode}" : ""
- def analysis = sh(
- script: """cat ${promptFile} | bob run ${modeFlag} --accept-license""",
- returnStdout: true
- ).trim()
- sh "rm -f ${promptFile}"
- return analysis
- }
+    container('bob') {
+        def promptFile = ".bob-prompt-${System.currentTimeMillis()}.txt"
+        writeFile file: promptFile, text: prompt
+        def modeFlag = mode ? "--mode ${mode}" : ""
+        try {
+            return sh(
+                script: "cat ${promptFile} | bob run ${modeFlag} --accept-license",
+                returnStdout: true
+            ).trim()
+        } finally {
+            sh "rm -f ${promptFile}"
+        }
+    }
 }
